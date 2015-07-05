@@ -1,0 +1,25 @@
+{
+    "appKeys": {
+        "KEY_ERA": 1,
+        "KEY_SECONDS": 0
+    },
+    "capabilities": [
+        "configurable"
+    ],
+    "companyName": "yak@llamasoft.co.uk",
+    "longName": "bbc",
+    "projectType": "native",
+    "resources": {
+        "media": []
+    },
+    "sdkVersion": "3",
+    "shortName": "bbc",
+    "targetPlatforms": [
+        "basalt"
+    ],
+    "uuid": "78afdf6e-b5c8-4dda-a0a3-54707008c602",
+    "versionLabel": "1.0",
+    "watchapp": {
+        "watchface": true
+    }
+}
