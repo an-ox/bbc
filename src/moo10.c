@@ -48,6 +48,30 @@ time_t temp;	 // Raw epoch time.
 bool showSeconds=true;
 int displayStyle=STYLE_1978;
 
+                
+// stuff to update info on battery and BT status
+
+static void handle_battery(BatteryChargeState charge_state) 
+{
+  batteryCharging=(charge_state.is_charging); 
+  batteryLevel=charge_state.charge_percent;
+}
+
+static void handle_bluetooth(bool connected)
+{
+  btconnected=connected;
+}
+
+static void timer_callback(void *data)
+{	
+  //Render
+  handle_battery(battery_state_service_peek());
+  btconnected=bluetooth_connection_service_peek(); 
+  layer_mark_dirty(canvas);
+  timer=app_timer_register((showSeconds)?1000:60000,(AppTimerCallback) timer_callback,0);
+}
+
+
 // Crap to handle stuff being sent from the phone
 
 static void process_tuple(Tuple *t)
@@ -66,6 +90,7 @@ static void process_tuple(Tuple *t)
       showSeconds=false;
       persist_write_bool(KEY_SECONDS,false);
     }
+    timer=app_timer_register(100,(AppTimerCallback) timer_callback,0); // force quick load after setting change
     break;
     case KEY_ERA:  // set style according to approximate BBC era
      if(strcmp(t->value->cstring,"1970")==0)
@@ -83,6 +108,7 @@ static void process_tuple(Tuple *t)
        displayStyle=STYLE_1981;
        persist_write_int(KEY_ERA,STYLE_1981);
      }    
+     timer=app_timer_register(100,(AppTimerCallback) timer_callback,0); // force quick load after setting change
     break;
   }
 }
@@ -142,19 +168,7 @@ static void makeCrap()
 static void destroyCrap()
 {
 }
-                
-// stuff to update info on battery and BT status
 
-static void handle_battery(BatteryChargeState charge_state) 
-{
-  batteryCharging=(charge_state.is_charging); 
-  batteryLevel=charge_state.charge_percent;
-}
-
-static void handle_bluetooth(bool connected)
-{
-  btconnected=connected;
-}
 	
 /****************************** Renderer Lifecycle *****************************/
 
@@ -162,14 +176,6 @@ static void handle_bluetooth(bool connected)
 /*
  * Render 
  */
-static void timer_callback(void *data)
-{	
-  //Render
-  handle_battery(battery_state_service_peek());
-  btconnected=bluetooth_connection_service_peek(); 
-  layer_mark_dirty(canvas);
-  timer=app_timer_register((showSeconds)?1000:60000,(AppTimerCallback) timer_callback,0);
-}
 
 /*
  * Start rendering loop
