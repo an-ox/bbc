@@ -5,6 +5,7 @@
 // keys for settings  
 #define KEY_SECONDS 0  
 #define KEY_ERA 1
+#define KEY_XCOL 2
   
  // styles
 #define STYLE_1970 0
@@ -15,6 +16,11 @@
 #define STYLE_1964 5
 #define STYLE_1966 6
 #define STYLE_1968 7
+#define STYLE_1991 8
+  
+ // for test mode
+  
+//#define TEST
   
 #define XREZ 144
 #define YREZ 168 
@@ -51,6 +57,7 @@ time_t temp;	 // Raw epoch time.
 
 // Some state.
 bool showSeconds=true;
+bool exCol=true;
 int displayStyle=STYLE_1978;
 bool firstBoot=true;
 uint32_t testcol=0xffffffff;
@@ -75,8 +82,12 @@ static void timer_callback(void *data)
   handle_battery(battery_state_service_peek());
   btconnected=bluetooth_connection_service_peek(); 
   layer_mark_dirty(canvas);
-  uint32_t tim=(showSeconds)?1000:60000;
- if(firstBoot) 
+#ifdef TEST
+    uint32_t tim=1000;
+#else
+    uint32_t tim=(showSeconds)?1000:60000;
+#endif
+  if(firstBoot) 
    {
    tim=100;
    firstBoot=false;
@@ -108,6 +119,19 @@ static void process_tuple(Tuple *t)
     }
     app_timer_reschedule(timer,100);
     break;
+ case KEY_XCOL:  // turn second hand off and on
+    if(strcmp(t->value->cstring,"on")==0)
+    {
+      exCol=true;
+      persist_write_bool(KEY_XCOL,true);
+    }
+    else if(strcmp(t->value->cstring,"off")==0)
+    {
+      exCol=false;
+      persist_write_bool(KEY_XCOL,false);
+    }
+    app_timer_reschedule(timer,100);
+    break;    
     case KEY_ERA:  // set style according to approximate BBC era
      if(strcmp(t->value->cstring,"0")==0) displayStyle=STYLE_1970;
      else if(strcmp(t->value->cstring,"1")==0) displayStyle=STYLE_1978;
@@ -117,7 +141,7 @@ static void process_tuple(Tuple *t)
      else if(strcmp(t->value->cstring,"5")==0) displayStyle=STYLE_1964;
      else if(strcmp(t->value->cstring,"6")==0) displayStyle=STYLE_1966;
      else if(strcmp(t->value->cstring,"7")==0) displayStyle=STYLE_1968;
-     
+    else if(strcmp(t->value->cstring,"8")==0) displayStyle=STYLE_1991;
      persist_write_int(KEY_ERA,displayStyle);
      app_timer_reschedule(timer,100);
    break;
@@ -236,7 +260,11 @@ static void shape(GContext *ctx,uint16_t ang,int16_t ox,int16_t oy,int16_t mx,in
     gpath_draw_filled(ctx,pptr);
   break;
   case 1: // open line draw
+#ifdef PBL_COLOR
     gpath_draw_outline_open(ctx,pptr);
+#else
+    gpath_draw_outline(ctx,pptr);
+#endif
   break;
   }
   gpath_destroy(pptr);
@@ -291,6 +319,143 @@ static void hand(GContext *ctx,uint16_t ang,int16_t w1, int16_t w2,int16_t outer
   
 }
 
+static void faceElement(GContext *ctx,uint16_t ang,int16_t rad,int16_t s1,int16_t s2,uint8_t type)
+{
+  GPoint a;
+  a.x=0;
+  a.y=rad;
+  rotate(ang,&a);
+  switch(type)
+  {
+   case 0:  // a dot
+    graphics_draw_circle(ctx,GPoint((a.x>>FRACBITS)+CENTREX,(a.y>>FRACBITS)+CENTREY),s1);
+    graphics_fill_circle(ctx,GPoint((a.x>>FRACBITS)+CENTREX,(a.y>>FRACBITS)+CENTREY),s1);
+  break;
+  }
+}
+
+void set_stroke_width(GContext *ctx,uint8_t w)
+  {
+  #ifdef PBL_COLOR
+    graphics_context_set_stroke_width(ctx,w);
+    #endif
+}
+
+uint32_t getcol4(int col)
+{
+#ifndef PBL_COLOR
+  return 0xffffffff;
+#else
+  uint32_t res=GColorFromHEX(col).argb;
+  return res|(res<<8)|(res<<16)|(res<<24);
+
+#endif
+}
+
+static void paint(GContext *ctx,uint8_t ystart,uint8_t ysize,int fill)
+{
+#ifdef PBL_COLOR
+  if(ystart>=YREZ) return;
+  
+   fill=getcol4(fill); 
+  // quickly paint a contiguous block of lines with a fill value   
+    GBitmap *b=graphics_capture_frame_buffer_format(ctx,GBitmapFormat8Bit);
+    uint8_t *bits=gbitmap_get_data(b);
+    uint32_t *lp=(uint32_t *)&bits[ystart*XREZ];
+    uint16_t cnt=(XREZ>>2)*ysize;
+    for(int j=0;j<cnt;j++) *lp++&=fill;
+    graphics_release_frame_buffer(ctx,b); 
+#endif
+ 
+}
+
+static void bband(GContext *ctx,int sch)
+{
+ // Paint background with a "battery band", sch denoting the colour scheme.
+  // Let the "band" be 8 colours, in order empty... full.
+  
+  uint32_t bband[4][8]=
+  {
+    {0xff0000,0xff0055,0xff00aa,0xaa00ff,0x5500aa,0x005555,0x00aa00,0x00ff00},
+    {0x0000aa,0x0000ff,0x0055ff,0x00aaff,0x00ffff,0xaaff55,0xffff00,0xaa5500},
+    {0x0000aa,0x0000ff,0x5500ff,0xaa00ff,0xff00ff,0xaa00ff,0x5500ff,0x0055ff},
+    {0x000055,0x0000aa,0x0000ff,0x5500ff,0x0000ff,0x0000aa,0x0000aa,0x000055}
+  };
+  
+  // Range over which it is going to move goes from 0 (Full) to (YRez-2) (Empty).
+  
+  uint16_t startlin=((YREZ-2)*batteryLevel)/100;
+  startlin=(YREZ-2)-startlin;
+  
+  // fill to just before startlin using empty colour
+  paint(ctx,0,startlin,bband[sch][0]);
+  // fill in the band in 2 pix high lines
+  for(uint8_t i=0;i<6;i++)
+  {
+    paint(ctx,startlin,2,bband[sch][i+1]);
+    startlin+=2;  
+  }
+  // paint the rest in full colour
+  if(startlin<YREZ)
+    {
+    paint(ctx,startlin,YREZ-startlin,bband[sch][7]);
+  }
+  
+}
+
+
+ void set_fill_color(GContext *ctx,int c)
+  {
+  #ifdef PBL_COLOR
+   graphics_context_set_fill_color(ctx,GColorFromHEX(c));
+  #else
+    if(c!=0)
+      graphics_context_set_fill_color(ctx,GColorWhite); 
+   else 
+      graphics_context_set_fill_color(ctx,GColorBlack); 
+  #endif
+}
+
+void set_stroke_color(GContext *ctx,int c)
+  {
+  #ifdef PBL_COLOR
+    graphics_context_set_stroke_color(ctx,GColorFromHEX(c));
+  #else
+    if(c!=0)
+      graphics_context_set_stroke_color(ctx,GColorWhite); 
+    else
+      graphics_context_set_stroke_color(ctx,GColorBlack); 
+  #endif
+}
+  
+void set_background_color(Window *window,int bgCol)
+{
+  #ifdef PBL_COLOR
+    window_set_background_color(window,GColorFromHEX(bgCol));
+  #else
+    window_set_background_color(window,GColorBlack); 
+  #endif
+}
+
+
+void setColour(GContext *ctx,int c)
+  {
+  #ifdef PBL_COLOR
+    graphics_context_set_stroke_color(ctx,GColorFromHEX(c));
+    graphics_context_set_fill_color(ctx,GColorFromHEX(c));
+  #else
+    if(c!=0)
+      {
+     graphics_context_set_stroke_color(ctx,GColorWhite); 
+      graphics_context_set_fill_color(ctx,GColorWhite); 
+  }
+  else
+  { 
+    graphics_context_set_stroke_color(ctx,GColorBlack); 
+  }
+  #endif
+}
+  
 static void batwings(GContext *ctx)
 {
   GPathInfo gp;
@@ -338,22 +503,29 @@ static void batwings(GContext *ctx)
     shape(ctx,0,0,0,0x100,0x108,&gp,0);
     shape(ctx,0,0,0,-0x100,0x108,&gp,0);
     gp.num_points=ARCPOINTS;
-    graphics_context_set_stroke_width(ctx,1);
- 
+  #ifdef PBL_COLOR  
+  graphics_context_set_stroke_width(ctx,1);
+ #endif
     shape(ctx,0,-23<<FRACBITS,-30<<FRACBITS,-0x40,0x80,&gp,1); 
     shape(ctx,0,-23<<FRACBITS,30<<FRACBITS,-0x40,0x80,&gp,1); 
     shape(ctx,0,23<<FRACBITS,-30<<FRACBITS,0x40,0x80,&gp,1); 
     shape(ctx,0,23<<FRACBITS,30<<FRACBITS,0x40,0x80,&gp,1);   
-  
-    graphics_context_set_stroke_width(ctx,2);
-   
+    set_stroke_width(ctx,2);
+  if(exCol) 
+  {
+    bband(ctx,0);
+    set_stroke_color(ctx,0x00aaff);
+  }
     graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),32);
-    graphics_context_set_stroke_width(ctx,1);
+    set_stroke_width(ctx,1);
     free(gp.points);
 }
 
+
+
 static void block(GContext *ctx,uint8_t ystart,uint8_t ysize,int fill)
 {
+#ifdef PBL_COLOR
   // quickly fill a contiguous block of lines with a fill value   
     GBitmap *b=graphics_capture_frame_buffer_format(ctx,GBitmapFormat8Bit);
     uint8_t *bits=gbitmap_get_data(b);
@@ -361,14 +533,21 @@ static void block(GContext *ctx,uint8_t ystart,uint8_t ysize,int fill)
     uint16_t cnt=(XREZ>>2)*ysize;
     for(int j=0;j<cnt;j++) *lp++=fill;
     graphics_release_frame_buffer(ctx,b); 
+#endif
  
 }
+
+
 
 static void render(Layer *layer, GContext* ctx) 
 {
   int i;
   static uint16_t lastSecond;
-  
+#ifdef TEST
+  displayStyle=STYLE_1991;
+  showSeconds=true;
+  exCol=true;
+#endif
   // Get the current bits of the time
 
   temp = time(NULL);	   // get raw time
@@ -452,12 +631,24 @@ uint16_t shOrigin=3;
       bgCol=0x000000;
       fillCol=0xffffff;
       innerDotCol=bgCol;  
-    graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
-      graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));   
+      set_fill_color(ctx,fillCol);
+      set_stroke_color(ctx,fillCol);   
+    if(exCol)
+      {
+      block(ctx,0,YREZ,0xffffffff);
+      bband(ctx,3);
+       innerDotCol=0xffff00;
+    }
      break;
     case STYLE_1978:
- graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
-      graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));   
+      set_fill_color(ctx,fillCol);
+      set_stroke_color(ctx,fillCol);  
+ if(exCol)
+      {
+      block(ctx,0,YREZ,0xffffffff);
+      bband(ctx,3);
+       innerDotCol=0xffff00;
+    }    
     break;
      case STYLE_1981:
       bgCol=0x000055;
@@ -467,9 +658,15 @@ uint16_t shOrigin=3;
       hhThickness=3<<(FRACBITS-1);
       innerDotRadius=7;
       shortenHH=5;
-      graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
-      graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));
+      set_fill_color(ctx,fillCol);
+      set_stroke_color(ctx,fillCol);
     innerDotCol=fillCol;
+    if(exCol)
+      {
+      block(ctx,0,YREZ,0xffffffff);
+      bband(ctx,3);
+       innerDotCol=0x00aaff;
+    }    
      break;
     case STYLE_1953:
       bgCol=0x000000;
@@ -477,11 +674,11 @@ uint16_t shOrigin=3;
       outerRadius=32<<FRACBITS;
       innerRadius=27<<FRACBITS;
       innerDotRadius=2;
-      graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
-      graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));   
+      set_fill_color(ctx,fillCol);
+      set_stroke_color(ctx,fillCol);
       shThickness=1<<FRACBITS;
      hhThickness=3<<(FRACBITS-1);
-     window_set_background_color(window,GColorFromHEX(bgCol));
+     set_background_color(window,bgCol);
      batwings(ctx);  
      innerDotCol=fillCol;
    break;
@@ -491,19 +688,35 @@ uint16_t shOrigin=3;
       outerRadius=45<<FRACBITS;
       innerRadius=38<<FRACBITS;
       innerDotRadius=8;
-      graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
-      graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));   
+      set_fill_color(ctx,fillCol);
+      set_stroke_color(ctx,fillCol);   
       shThickness=mhThickness=hhThickness=1<<(FRACBITS-1);
-     window_set_background_color(window,GColorFromHEX(bgCol));  
- innerDotCol=fillCol;
+      set_background_color(window,bgCol);  
+    if(exCol)
+      innerDotCol=0xffaa00;
+    else
+      innerDotCol=fillCol;
     shLength=70<<FRACBITS;
-    graphics_context_set_stroke_width(ctx,2);
+    set_stroke_width(ctx,2);
+    if(exCol) setColour(ctx,0xffffff);
     graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),70);
-    graphics_context_set_fill_color(ctx,GColorFromHEX(0x555555));
+     if(exCol) 
+     {
+       bband(ctx,0);
+      set_fill_color(ctx,0x5500aa);
+     }
+    else
+    {  
+      set_fill_color(ctx,0x555555);
+    }
+    #ifdef PBL_COLOR
     graphics_fill_circle(ctx,GPoint(CENTREX,CENTREY),46);
+    #endif
+     if(exCol) setColour(ctx,0xff00aa);
     graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),46);
-    graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
-        graphics_context_set_stroke_width(ctx,1);
+  
+    set_fill_color(ctx,fillCol);
+    set_stroke_width(ctx,1);
     shortenHH=0;
     
     break;
@@ -516,16 +729,23 @@ uint16_t shOrigin=3;
      shLength=55<<FRACBITS;
 
       shThickness=mhThickness=hhThickness=1<<(FRACBITS-1);
-     window_set_background_color(window,GColorFromHEX(bgCol));  
+     set_background_color(window,bgCol);  
  innerDotCol=fillCol;
-    graphics_context_set_stroke_width(ctx,8);
-    graphics_context_set_stroke_color(ctx,GColorFromHEX(0x555555));
+    set_stroke_width(ctx,8);
+    set_stroke_color(ctx,0x555555);
+ 
+     if(exCol) 
+     {
+       setColour(ctx,0xff00aa);
+       bband(ctx,1);
+       innerDotCol=0xffaa00;
+     }
     graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),60);
-    graphics_context_set_fill_color(ctx,GColorFromHEX(0));
+    set_fill_color(ctx,0);
     graphics_fill_circle(ctx,GPoint(CENTREX,CENTREY),50);
-    graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
-    graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));    
-        graphics_context_set_stroke_width(ctx,1);
+    set_fill_color(ctx,fillCol);
+    set_stroke_color(ctx,fillCol);    
+    set_stroke_width(ctx,1);
     shortenHH=-15;
     break;   
 
@@ -538,19 +758,24 @@ uint16_t shOrigin=3;
      shLength=55<<FRACBITS;
 
       shThickness=mhThickness=hhThickness=1<<(FRACBITS-1);
-     window_set_background_color(window,GColorFromHEX(bgCol));  
+     set_background_color(window,bgCol);  
      innerDotCol=0;
     block(ctx,(YREZ>>1)-60,120,0xffffffff);
-    graphics_context_set_stroke_width(ctx,8);
-    graphics_context_set_stroke_color(ctx,GColorFromHEX(0));
+
+    set_stroke_width(ctx,8);
+    set_stroke_color(ctx,0);
     graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),65);
    
-    graphics_context_set_fill_color(ctx,GColorFromHEX(0));
+    set_fill_color(ctx,0);
     graphics_fill_circle(ctx,GPoint(CENTREX,CENTREY),55);
-    graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
+    set_fill_color(ctx,fillCol);
      graphics_fill_circle(ctx,GPoint(CENTREX,CENTREY),12);
-    graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));    
-        graphics_context_set_stroke_width(ctx,1);
+      if(exCol)
+      {
+       bband(ctx,0);
+    }  
+    set_stroke_color(ctx,fillCol);    
+    set_stroke_width(ctx,1);
     shortenHH=-15;
     break;   
     case STYLE_1968:
@@ -562,31 +787,66 @@ uint16_t shOrigin=3;
      shLength=55<<FRACBITS;
 
       shThickness=mhThickness=hhThickness=1<<(FRACBITS-1);
-     window_set_background_color(window,GColorFromHEX(bgCol));  
+     set_background_color(window,bgCol);  
      innerDotCol=0;
     block(ctx,(YREZ>>1)-45,30,0xaaaaaaaa);
     block(ctx,(YREZ>>1)-15,30,0xffffffff);
     block(ctx,(YREZ>>1)+15,30,0xaaaaaaaa);
    
-    graphics_context_set_fill_color(ctx,GColorFromHEX(0));
+    set_fill_color(ctx,0);
     graphics_fill_circle(ctx,GPoint(CENTREX,CENTREY),60);
-    graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
-     graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));
-    graphics_context_set_stroke_width(ctx,3);
+    set_fill_color(ctx,fillCol);
+      set_stroke_color(ctx,fillCol);
+    set_stroke_width(ctx,3);
 
     graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),55);
-    graphics_context_set_stroke_width(ctx,1);
+    set_stroke_width(ctx,1);
      graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),9);
-    graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
-    graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));    
-    graphics_context_set_stroke_width(ctx,1);
+    
+     if(exCol)
+      {
+       bband(ctx,2);
+    }    
+    //graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
+    //graphics_context_set_stroke_color(ctx,GColorFromHEX(fillCol));    
+    set_stroke_width(ctx,1);
     shortenHH=-10;
     shOrigin=10;
     break;      
+  case STYLE_1991:
+     bgCol=0;
+      fillCol=0xffffff;
+      outerRadius=65<<FRACBITS;
+      innerRadius=50<<FRACBITS;
+      innerDotRadius=4;
+     shLength=67<<FRACBITS;
+
+      mhThickness=hhThickness=1<<(FRACBITS-0);
+      shThickness=1<<(FRACBITS-1); 
+    set_background_color(window,bgCol);  
+     innerDotCol=0;
+    set_fill_color(ctx,fillCol);
+      set_stroke_color(ctx,fillCol);
+    set_stroke_width(ctx,3);
+
+    //set_stroke_width(ctx,1);
+  if(exCol)
+      {
+      block(ctx,0,YREZ,0xffffffff);
+      bband(ctx,3);
+       innerDotCol=0x00ff00;
+      setColour(ctx,0xff5500);
+    }
+      
+     graphics_fill_circle(ctx,GPoint(CENTREX,CENTREY),9);
+    set_stroke_width(ctx,1);
+    shortenHH=25;
+    shOrigin=-10;
     
+    break;          
   }  
   
-  window_set_background_color(window,GColorFromHEX(bgCol));
+  set_background_color(window,bgCol);
 
   // draw the hour pips for current style
   
@@ -598,54 +858,91 @@ uint16_t shOrigin=3;
   
   int vw=3<<(FRACBITS-1);
   const int baa=2<<FRACBITS;  // bar size for 1981 era
+  const uint32_t prands[6]={0xff0000,0xff0000,0xff5500,0xffaa00,0xffff00,0xffff55};
+  const uint32_t prands2[6]={0xff0000,0xff8000,0xffff00,0x00ff00,0x0000ff,0x8000ff};
   for(i=0;i<12;i++)
   {
     switch(displayStyle)
     {
       // draw the hour pips according to the era
+      case STYLE_1991:  // alternate bars and circles
+      if(i&1)
+        {
+         if(exCol) setColour(ctx,0xff5500);
+           hand(ctx,ph,baa,baa,outerRadius,innerRadius,0);  
+      }
+      else
+        {
+        if(exCol) setColour(ctx,0x00ff00);
+          faceElement(ctx,ph,60<<FRACBITS,2,0,0);
+      }
+      break;
       case STYLE_1970: // use the gradually fattening hour pips
+      if(exCol) setColour(ctx,prands[i>>1]);
+      hand(ctx,ph,vw,vw,outerRadius,innerRadius,-(vw+gapWidth));
+       hand(ctx,ph,vw,vw,outerRadius,innerRadius,vw+gapWidth);
+      break;      
       case STYLE_1978:
+       if(exCol) setColour(ctx,prands2[i>>1]);
        hand(ctx,ph,vw,vw,outerRadius,innerRadius,-(vw+gapWidth));
        hand(ctx,ph,vw,vw,outerRadius,innerRadius,vw+gapWidth);
       break;
       case STYLE_1981: // use single bars except for 12,3,6 and 9 which are double
        if((i%3)==2)
        {
+          if(exCol) setColour(ctx,0x00ffff);
         hand(ctx,ph,baa,baa,outerRadius,innerRadius,-(baa+gapWidth));
         hand(ctx,ph,baa,baa,outerRadius,innerRadius,baa+gapWidth);  
        }
        else
        {
+          if(exCol) setColour(ctx,0xff00ff);
         hand(ctx,ph,baa,baa,outerRadius,innerRadius,0);  
        }
       break;
       case STYLE_1953:
       if(i==11)
+      {
+        if(exCol) setColour(ctx,0x00ffff);
         hand(ctx,ph,baa>>1,baa>>1,outerRadius,innerRadius-(5<<FRACBITS),0);
+      }
       else
-        hand(ctx,ph,baa>>1,baa>>1,outerRadius,innerRadius,0);
+      {
+        if(exCol) setColour(ctx,0xaaffff);
+         hand(ctx,ph,baa>>1,baa>>1,outerRadius,innerRadius,0);
+      }
       break;
       case STYLE_1963:  // 4 ordinal bars are slightly thicker
       if((i%3)==2)
        {
+         if(exCol) setColour(ctx,0xaaffff);
         hand(ctx,ph,baa,baa,outerRadius,innerRadius,0);  
        }
        else
        {
+         if(exCol) setColour(ctx,0x00ffff);
         hand(ctx,ph,baa>>1,baa>>1,outerRadius,innerRadius,0);  
        }
       break;
       case STYLE_1964:  // evenly spaced thick pips
+        if(exCol) setColour(ctx,0x00ffff);
       hand(ctx,ph,baa,baa,outerRadius,innerRadius,0);  
       break;
       case STYLE_1966:  // ordinal bars very slightly longer
-      graphics_context_set_stroke_width(ctx,2);
+      set_stroke_width(ctx,2);
       if((i%3)==2)
+        {
+        if(exCol) setColour(ctx,0x00ffff);
         hand(ctx,ph,baa>0,baa>0,outerRadius,innerRadius-(5<<FRACBITS),0);  
+      }
       else
+      {  
+        if(exCol) setColour(ctx,0x0055ff);
         hand(ctx,ph,baa>0,baa>0,outerRadius,innerRadius,0);  
+      }
       break;
        case STYLE_1968:  // evenly spaced thin pips
+       if(exCol) setColour(ctx,0xff55ff);
       hand(ctx,ph,baa>>1,baa>>1,outerRadius,innerRadius,0);  
       break;     
     }
@@ -659,7 +956,22 @@ uint16_t shOrigin=3;
   int32_t ang=TRIG_MAX_ANGLE*currentSecond/60;
   switch(displayStyle)
   {
-    case STYLE_1963:
+    case STYLE_1991:
+    if(showSeconds)
+    {
+      set_stroke_width(ctx,1);
+      hand(ctx,ang,shThickness,shThickness,shLength,shOrigin<<FRACBITS,0);
+    }
+     set_stroke_width(ctx,2);
+    
+      ang=TRIG_MAX_ANGLE*currentMinute/60+(ang/60);
+      hand(ctx,ang,mhThickness,mhThickness,outerRadius,0,0);
+     if(exCol)
+          setColour(ctx,0x00ff00);
+      ang=TRIG_MAX_ANGLE*currentHour/12+(ang/12);
+      hand(ctx,ang,hhThickness,hhThickness,outerRadius-(shortenHH<<FRACBITS),0,0);    
+    break;
+    case STYLE_1963:  // all styles with no extra blobs in the middle
     case STYLE_1964:
       case STYLE_1966:
     case STYLE_1968:
@@ -667,13 +979,19 @@ uint16_t shOrigin=3;
     
     if(showSeconds)
     {
-      graphics_context_set_stroke_width(ctx,1+(shortenHH==0));
+      if(exCol)
+          setColour(ctx,0xff00aa);
+      set_stroke_width(ctx,1+(shortenHH==0));
       hand(ctx,ang,shThickness,shThickness,shLength,(shOrigin+shortenHH)<<FRACBITS,0);
     }
-     graphics_context_set_stroke_width(ctx,2);
+     set_stroke_width(ctx,2);
       ang=TRIG_MAX_ANGLE*currentMinute/60+(ang/60);
+          if(exCol)
+        setColour(ctx,0xffff00);
       hand(ctx,ang,mhThickness,mhThickness,outerRadius,shOrigin<<FRACBITS,0);
       ang=TRIG_MAX_ANGLE*currentHour/12+(ang/12);
+         if(exCol)
+        setColour(ctx,0xffff00);
       hand(ctx,ang,hhThickness,hhThickness,outerRadius-(15<<FRACBITS),shOrigin<<FRACBITS,0);    
     break;
     case STYLE_1953:  // this one has weird pointy hands and odd ring arrangements
@@ -686,30 +1004,49 @@ uint16_t shOrigin=3;
         gp.points[1].y=-16<<FRACBITS;
         gp.points[2].x=2<<FRACBITS;
         gp.points[2].y=-16<<FRACBITS;
+        if(exCol)
+          setColour(ctx,0xff00aa);
         shape(ctx,ang,0,0,0x100,0x100,&gp,0); 
        }
       // then a ring of background colour
-      graphics_context_set_fill_color(ctx,GColorFromHEX(bgCol));
+      set_fill_color(ctx,bgCol);
       graphics_fill_circle(ctx,GPoint(CENTREX,CENTREY),8);
       // now the minute hand just using the old hand() proc
       ang=TRIG_MAX_ANGLE*currentMinute/60+(ang/60);
-      graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
+      if(exCol)
+        setColour(ctx,0xffaa00);
+      else
+        set_fill_color(ctx,fillCol);
       hand(ctx,ang,1<<(FRACBITS-0),mhThickness,28<<FRACBITS,3<<FRACBITS,0);
       // and now the hour 
+     if(exCol)
+        setColour(ctx,0xffff00);
       ang=TRIG_MAX_ANGLE*currentHour/12+(ang/12);
-      hand(ctx,ang,3<<(FRACBITS-1),hhThickness,18<<FRACBITS,3<<FRACBITS,0);    
+      hand(ctx,ang,3<<(FRACBITS-1),hhThickness,22<<FRACBITS,3<<FRACBITS,0);    
       // then a ring of foreground colour
-     graphics_context_set_stroke_width(ctx,2);
-      graphics_context_set_fill_color(ctx,GColorFromHEX(fillCol));
+     set_stroke_width(ctx,2);
+     if(exCol)
+        setColour(ctx,0xff00aa);
+    else
+      set_fill_color(ctx,fillCol);
       graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),9);    
     break;  
     
     default:  // for the main non weird styles
-     if(displayStyle==STYLE_1981)  // in this style the hands are white
+    if(exCol) setColour(ctx,0xffffaa);
+    if(displayStyle==STYLE_1981)  // in this style the hands are white
       {
-         graphics_context_set_fill_color(ctx,GColorFromHEX(0xffffff));
-         graphics_context_set_stroke_color(ctx,GColorFromHEX(0xffffff));
+      if(exCol)
+        {
+          setColour(ctx,0xffff00);
       }
+      else
+        {
+         set_fill_color(ctx,0xffffff);
+      set_stroke_color(ctx,0xffffff);
+      }
+      }
+   
       if(showSeconds) 
       {
         hand(ctx,ang,shThickness,shThickness,70<<FRACBITS,10<<FRACBITS,0);  
@@ -718,13 +1055,14 @@ uint16_t shOrigin=3;
           hand(ctx,ang+0x8000,shThickness,shThickness,25<<FRACBITS,10<<FRACBITS,0);  
         }
       }
+ 
       ang=TRIG_MAX_ANGLE*currentMinute/60+(ang/60);
       hand(ctx,ang,mhThickness,mhThickness,70<<FRACBITS,10<<FRACBITS,0); 
       ang=TRIG_MAX_ANGLE*currentHour/12+(ang/12);
       hand(ctx,ang,hhThickness,hhThickness,(48-shortenHH)<<FRACBITS,10<<FRACBITS,0);
      
-      graphics_context_set_fill_color(ctx,GColorFromHEX((displayStyle==STYLE_1981)?bgCol:fillCol));
-      graphics_context_set_stroke_color(ctx,GColorFromHEX((displayStyle==STYLE_1981)?bgCol:fillCol));
+      set_fill_color(ctx,(displayStyle==STYLE_1981)?bgCol:fillCol);
+      set_stroke_color(ctx,(displayStyle==STYLE_1981)?bgCol:fillCol);
       graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),15);
       graphics_fill_circle(ctx,GPoint(CENTREX,CENTREY),15);
     break;
@@ -737,16 +1075,16 @@ uint16_t shOrigin=3;
   // I'll draw the inner dot in red if the battery is below or equal to 30%
     uint8_t dr=innerDotRadius;
   
-  if(batteryLevel>30)  // normal colours
+  if(batteryLevel>30||exCol)  // normal colours
   {
-    graphics_context_set_fill_color(ctx,GColorFromHEX(innerDotCol));
-    graphics_context_set_stroke_color(ctx,GColorFromHEX(innerDotCol));
+    set_fill_color(ctx,innerDotCol);
+    set_stroke_color(ctx,innerDotCol);
   }
   else  // red dot
   {
       if(dr==0) dr=10;  // batt low always shows a nonzero doe
-    graphics_context_set_fill_color(ctx,GColorFromHEX(0xff0000));
-    graphics_context_set_stroke_color(ctx,GColorFromHEX(0xff0000));
+    set_fill_color(ctx,0xff0000);
+    set_stroke_color(ctx,0xff0000);
   }
   graphics_draw_circle(ctx,GPoint(CENTREX,CENTREY),dr);
   graphics_fill_circle(ctx,GPoint(CENTREX,CENTREY),dr); 
@@ -755,8 +1093,12 @@ uint16_t shOrigin=3;
   //block(ctx,0,30,testcol);
   //testcol^=0xffffff;
   
-  // the watchface is drawn, if BT is disconnected add some 'interference'
+  // removing the interference on BT disconnect, no bugger seems to like it
   
+  /*
+  
+  // the watchface is drawn, if BT is disconnected add some 'interference'
+  #ifdef PBL_COLOR
   if(!btconnected)  // bluetooth disabled
   {
     GBitmap *b=graphics_capture_frame_buffer_format(ctx,GBitmapFormat8Bit);
@@ -773,7 +1115,8 @@ uint16_t shOrigin=3;
     }
     graphics_release_frame_buffer(ctx,b); 
   }
-   
+   #endif
+   */
 }
 
 
@@ -784,7 +1127,7 @@ uint16_t shOrigin=3;
 static void window_load(Window *window)
 {
 	//Setup window
-	window_set_background_color(window,GColorFromHEX(0x000055));
+	set_background_color(window,0x000055);
 	
 	//Setup canvas
 	canvas = layer_create(GRect(0, 0, 144, 168));
@@ -798,7 +1141,7 @@ static void window_load(Window *window)
   // load persistent state
   showSeconds=persist_read_bool(KEY_SECONDS);
   displayStyle=persist_read_int(KEY_ERA);
-  
+  exCol=persist_read_bool(KEY_XCOL);
 	//Start rendering
 	start();
 }

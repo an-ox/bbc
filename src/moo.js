@@ -21,7 +21,8 @@ Pebble.addEventListener("webviewclosed",
     //Send to Pebble, persist there
     Pebble.sendAppMessage(
       {"KEY_SECONDS": configuration.seconds,
-       "KEY_ERA":configuration.era},
+       "KEY_ERA":configuration.era,
+       "KEY_XCOL":configuration.xcol},
       function(e) {
         console.log("Sending settings data...");
       },
