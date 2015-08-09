@@ -107,12 +107,13 @@ static void process_tuple(Tuple *t)
   switch(t->key)
   {
    case KEY_SECONDS:  // turn second hand off and on
-    if(strcmp(t->value->cstring,"on")==0)
+    //if(strcmp(t->value->cstring,"on")==0)
+    if(t->value->int32>0) 
     {
       showSeconds=true;
       persist_write_bool(KEY_SECONDS,true);
     }
-    else if(strcmp(t->value->cstring,"off")==0)
+    else 
     {
       showSeconds=false;
       persist_write_bool(KEY_SECONDS,false);
@@ -120,12 +121,13 @@ static void process_tuple(Tuple *t)
     app_timer_reschedule(timer,100);
     break;
  case KEY_XCOL:  // turn second hand off and on
-    if(strcmp(t->value->cstring,"on")==0)
+    //if(strcmp(t->value->cstring,"on")==0)
+    if(t->value->int32>0) 
     {
       exCol=true;
       persist_write_bool(KEY_XCOL,true);
     }
-    else if(strcmp(t->value->cstring,"off")==0)
+    else 
     {
       exCol=false;
       persist_write_bool(KEY_XCOL,false);
@@ -859,7 +861,7 @@ uint16_t shOrigin=3;
   int vw=3<<(FRACBITS-1);
   const int baa=2<<FRACBITS;  // bar size for 1981 era
   const uint32_t prands[6]={0xff0000,0xff0000,0xff5500,0xffaa00,0xffff00,0xffff55};
-  const uint32_t prands2[6]={0xff0000,0xff8000,0xffff00,0x00ff00,0x0000ff,0x8000ff};
+  const uint32_t prands2[6]={0xff0000,0xff8000,0xffff00,0x00ff00,0x00ffff,0x8000ff};
   for(i=0;i<12;i++)
   {
     switch(displayStyle)

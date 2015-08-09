@@ -15,6 +15,7 @@ Pebble.addEventListener("showConfiguration",
 Pebble.addEventListener("webviewclosed",
   function(e) {
     //Get JSON dictionary
+    console.log("Receiving settings data...");
     var configuration = JSON.parse(decodeURIComponent(e.response));
     console.log("Configuration window returned: " + JSON.stringify(configuration));
  
